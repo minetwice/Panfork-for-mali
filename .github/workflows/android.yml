@@ -32,6 +32,35 @@ jobs:
           ndk-version: r26b
           add-to-path: true
 
+      - name: Apply Android noafbc patch (Minecraft block textures)
+        run: |
+          set -e
+          FILE=src/gallium/drivers/panfrost/pan_screen.c
+          python3 << 'PY'
+          from pathlib import Path
+          p = Path("src/gallium/drivers/panfrost/pan_screen.c")
+          t = p.read_text()
+          old = '''   /* Debug must be set first for pandecode to work correctly */
+   dev->debug =
+      debug_get_flags_option("PAN_MESA_DEBUG", panfrost_debug_options, 0);
+   screen->max_afbc_packing_ratio = debug_get_num_option(
+      "PAN_MAX_AFBC_PACKING_RATIO", DEFAULT_MAX_AFBC_PACKING_RATIO);'''
+          new = '''   /* Debug must be set first for pandecode to work correctly */
+   dev->debug =
+      debug_get_flags_option("PAN_MESA_DEBUG", panfrost_debug_options, 0);
+   /* FearLauncher: AFBC corrupts Minecraft block textures on Mali+kbase+OSMesa */
+#if defined(__ANDROID__) || defined(ANDROID)
+   if (!(dev->debug & PAN_DBG_NO_AFBC))
+      dev->debug |= PAN_DBG_NO_AFBC;
+#endif
+   screen->max_afbc_packing_ratio = debug_get_num_option(
+      "PAN_MAX_AFBC_PACKING_RATIO", DEFAULT_MAX_AFBC_PACKING_RATIO);'''
+          if old not in t:
+              raise SystemExit("patch context not found in pan_screen.c")
+          p.write_text(t.replace(old, new, 1))
+          print("patched pan_screen.c for Android noafbc default")
+          PY
+
       - name: Build static libdrm + Mesa OSMesa
         env:
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
@@ -70,45 +99,28 @@ jobs:
             -Dshared-glapi=false \
             -Dbuildtype=release
           ninja -C build-android install
-
-          echo "=== installed libs ==="
           find /tmp/pan -name '*.so*' | sort
 
       - name: Package for FearLauncher
         run: |
           set -e
           mkdir -p out/arm64-v8a
-          # Prefer OSMesa shared lib (soversion 8 is classic Pojav name)
-          for f in /tmp/pan/lib*/libOSMesa.so* /tmp/pan/lib/libOSMesa.so* /tmp/pan/lib64/libOSMesa.so*; do
-            [ -f "$f" ] || continue
-            cp -v "$f" out/arm64-v8a/
-          done
-          # Also copy any libOSMesa*.so without path quirks
           find /tmp/pan -name 'libOSMesa*.so*' -exec cp -v {} out/arm64-v8a/ \;
-          # Panfrost DRI / gallium if present
           find /tmp/pan -name 'libgallium*.so*' -exec cp -v {} out/arm64-v8a/ \; 2>/dev/null || true
-          find /tmp/pan -name '*panfrost*' -name '*.so*' -exec cp -v {} out/arm64-v8a/ \; 2>/dev/null || true
-
           cd out/arm64-v8a
-          # FearLauncher expects LIB_MESA_NAME=libOSMesa_8.so
-          if [ -f libOSMesa.so.8 ]; then
-            cp -v libOSMesa.so.8 libOSMesa_8.so
-          elif [ -f libOSMesa.so ]; then
-            cp -v libOSMesa.so libOSMesa_8.so
+          if [ -f libOSMesa.so.8 ]; then cp -v libOSMesa.so.8 libOSMesa_8.so
+          elif [ -f libOSMesa.so ]; then cp -v libOSMesa.so libOSMesa_8.so
           fi
           ls -la
           cd ../..
           cat > out/README.txt << 'EOF'
-          FearLauncher / Mali Panfork package
-          ---------------------------------
-          Copy libOSMesa_8.so into the launcher jniLibs/arm64-v8a (or native lib dir).
+          FearLauncher Mali Panfork package
+          Copy libOSMesa_8.so into launcher jniLibs/arm64-v8a
 
-          Recommended env (texture glitch mitigation — also default in this build):
-            PAN_MESA_DEBUG=noafbc
-            GALLIUM_DRIVER=panfrost
+          Env:
             LIB_MESA_NAME=libOSMesa_8.so
-
-          If panfrost kbase fails to open, softpipe (swrast) still works via OSMesa.
+            GALLIUM_DRIVER=panfrost
+            PAN_MESA_DEBUG=noafbc
           EOF
           (cd out && zip -r fear-launcher-panfork-osmesa-arm64.zip arm64-v8a README.txt)
           ls -la out/
