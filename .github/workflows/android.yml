@@ -1,51 +1,60 @@
-name: Build Android
+name: Build Android OSMesa (FearLauncher)
 
 on:
   [push, pull_request, workflow_dispatch]
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
   build:
     strategy:
       matrix:
-        arch: [ "arm32", "aarch64" ]
+        arch: [ "aarch64" ]
       fail-fast: false
 
-    name: "Build for ${{matrix.arch}}"
-
+    name: "Build OSMesa+Panfrost for ${{ matrix.arch }}"
     runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     steps:
-        
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
-      - name: Build
+      - name: Install deps
         run: |
-          sudo apt update
-          sudo apt install -y meson libxrandr-dev libxxf86vm-dev libxcb-*-dev libx11-xcb-dev libxfixes-dev libdrm-dev libx11-dev
-          pip3 install mako
-          export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk-bundle"
-          envsubst <android-drm-${{matrix.arch}} >build-crossfile-drm
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build pkg-config \
+            libxrandr-dev libxxf86vm-dev libxcb-*-dev libx11-xcb-dev \
+            libxfixes-dev libdrm-dev libx11-dev python3-pip bison flex
+          pip3 install --user mako packaging pyyaml
+
+      - name: Setup NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26b
+          add-to-path: true
+
+      - name: Build static libdrm + Mesa OSMesa
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          set -e
+          envsubst < android-drm-${{ matrix.arch }} > build-crossfile-drm
           git clone --depth 1 https://gitlab.freedesktop.org/mesa/drm.git
           cd drm
-          meson setup "build-android" \
+          meson setup build-android \
             --prefix=/tmp/drm-static \
-            --cross-file "../build-crossfile-drm" \
+            --cross-file ../build-crossfile-drm \
             -Ddefault_library=static \
-            -Dintel=disabled \
-            -Dradeon=disabled \
-            -Damdgpu=disabled \
-            -Dnouveau=disabled \
-            -Dvmwgfx=disabled \
-            -Dfreedreno=disabled \
-            -Dvc4=disabled \
-            -Detnaviv=disabled
-          ninja -C "build-android" install
+            -Dintel=disabled -Dradeon=disabled -Damdgpu=disabled \
+            -Dnouveau=disabled -Dvmwgfx=disabled -Dfreedreno=disabled \
+            -Dvc4=disabled -Detnaviv=disabled
+          ninja -C build-android install
           cd ..
-          envsubst <android-${{matrix.arch}} >build-crossfile
-          meson setup "build-android" \
+
+          envsubst < android-${{ matrix.arch }} > build-crossfile
+          meson setup build-android \
             --prefix=/tmp/pan \
-            --cross-file "build-crossfile" \
+            --cross-file build-crossfile \
             -Dplatforms=android \
             -Dplatform-sdk-version=26 \
             -Dandroid-stub=true \
@@ -58,10 +67,56 @@ jobs:
             -Dosmesa=true \
             -Dvulkan-drivers= \
             -Dgallium-drivers=swrast,panfrost \
-            -Dshared-glapi=false
-          ninja -C "build-android" install
-      - name: Upload libraries
-        uses: actions/upload-artifact@v2
+            -Dshared-glapi=false \
+            -Dbuildtype=release
+          ninja -C build-android install
+
+          echo "=== installed libs ==="
+          find /tmp/pan -name '*.so*' | sort
+
+      - name: Package for FearLauncher
+        run: |
+          set -e
+          mkdir -p out/arm64-v8a
+          # Prefer OSMesa shared lib (soversion 8 is classic Pojav name)
+          for f in /tmp/pan/lib*/libOSMesa.so* /tmp/pan/lib/libOSMesa.so* /tmp/pan/lib64/libOSMesa.so*; do
+            [ -f "$f" ] || continue
+            cp -v "$f" out/arm64-v8a/
+          done
+          # Also copy any libOSMesa*.so without path quirks
+          find /tmp/pan -name 'libOSMesa*.so*' -exec cp -v {} out/arm64-v8a/ \;
+          # Panfrost DRI / gallium if present
+          find /tmp/pan -name 'libgallium*.so*' -exec cp -v {} out/arm64-v8a/ \; 2>/dev/null || true
+          find /tmp/pan -name '*panfrost*' -name '*.so*' -exec cp -v {} out/arm64-v8a/ \; 2>/dev/null || true
+
+          cd out/arm64-v8a
+          # FearLauncher expects LIB_MESA_NAME=libOSMesa_8.so
+          if [ -f libOSMesa.so.8 ]; then
+            cp -v libOSMesa.so.8 libOSMesa_8.so
+          elif [ -f libOSMesa.so ]; then
+            cp -v libOSMesa.so libOSMesa_8.so
+          fi
+          ls -la
+          cd ../..
+          cat > out/README.txt << 'EOF'
+          FearLauncher / Mali Panfork package
+          ---------------------------------
+          Copy libOSMesa_8.so into the launcher jniLibs/arm64-v8a (or native lib dir).
+
+          Recommended env (texture glitch mitigation — also default in this build):
+            PAN_MESA_DEBUG=noafbc
+            GALLIUM_DRIVER=panfrost
+            LIB_MESA_NAME=libOSMesa_8.so
+
+          If panfrost kbase fails to open, softpipe (swrast) still works via OSMesa.
+          EOF
+          (cd out && zip -r fear-launcher-panfork-osmesa-arm64.zip arm64-v8a README.txt)
+          ls -la out/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: panfrost_${{matrix.arch}}
-          path: /tmp/pan
+          name: fear-launcher-panfork-osmesa-${{ matrix.arch }}
+          path: out/fear-launcher-panfork-osmesa-arm64.zip
+          if-no-files-found: warn
+          retention-days: 30
