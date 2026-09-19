@@ -3,8 +3,10 @@ name: Build Android OSMesa
 on:
   push:
     branches:
-      - "24.0"
+      - '24.0'
   pull_request:
+    branches:
+      - '24.0'
   workflow_dispatch:
 
 permissions:
@@ -15,7 +17,6 @@ jobs:
     name: Build OSMesa Panfrost aarch64
     runs-on: ubuntu-latest
     timeout-minutes: 90
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,9 +24,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y meson ninja-build pkg-config gettext-base \
-            libxrandr-dev libxxf86vm-dev libx11-xcb-dev libxfixes-dev \
-            libdrm-dev libx11-dev python3-pip bison flex
+          sudo apt-get install -y meson ninja-build pkg-config gettext-base python3-pip bison flex libdrm-dev
           pip3 install --user mako packaging pyyaml
 
       - name: Setup Android NDK
@@ -36,89 +35,16 @@ jobs:
           add-to-path: true
 
       - name: Apply Android noafbc patch
-        run: |
-          set -e
-          FILE=src/gallium/drivers/panfrost/pan_screen.c
-          grep -q 'PAN_MESA_DEBUG' "$FILE"
-          python3 -c "
-          from pathlib import Path
-          p = Path('src/gallium/drivers/panfrost/pan_screen.c')
-          t = p.read_text()
-          needle = 'debug_get_flags_option(\"PAN_MESA_DEBUG\", panfrost_debug_options, 0);'
-          insert = '''debug_get_flags_option(\"PAN_MESA_DEBUG\", panfrost_debug_options, 0);
-#if defined(__ANDROID__) || defined(ANDROID)
-   if (!(dev->debug & PAN_DBG_NO_AFBC))
-      dev->debug |= PAN_DBG_NO_AFBC;
-#endif'''
-          if 'PAN_DBG_NO_AFBC))' in t and 'defined(__ANDROID__)' in t:
-              print('already patched')
-          elif needle not in t:
-              raise SystemExit('patch context not found')
-          else:
-              p.write_text(t.replace(needle, insert, 1))
-              print('patched ok')
-          "
+        run: bash scripts/apply-noafbc.sh
 
       - name: Build libdrm and Mesa OSMesa
         env:
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-        run: |
-          set -e
-          envsubst < android-drm-aarch64 > build-crossfile-drm
-          git clone --depth 1 https://gitlab.freedesktop.org/mesa/drm.git
-          cd drm
-          meson setup build-android \
-            --prefix=/tmp/drm-static \
-            --cross-file ../build-crossfile-drm \
-            -Ddefault_library=static \
-            -Dintel=disabled -Dradeon=disabled -Damdgpu=disabled \
-            -Dnouveau=disabled -Dvmwgfx=disabled -Dfreedreno=disabled \
-            -Dvc4=disabled -Detnaviv=disabled
-          ninja -C build-android install
-          cd ..
-
-          envsubst < android-aarch64 > build-crossfile
-          meson setup build-android \
-            --prefix=/tmp/pan \
-            --cross-file build-crossfile \
-            -Dplatforms=android \
-            -Dplatform-sdk-version=26 \
-            -Dandroid-stub=true \
-            -Dllvm=disabled \
-            -Dxlib-lease=disabled \
-            -Degl=disabled \
-            -Dgbm=disabled \
-            -Dglx=disabled \
-            -Dopengl=true \
-            -Dosmesa=true \
-            -Dvulkan-drivers= \
-            -Dgallium-drivers=swrast,panfrost \
-            -Dshared-glapi=false \
-            -Dbuildtype=release
-          ninja -C build-android install
-          find /tmp/pan -name '*.so*' | sort
+        run: bash scripts/build-android-osmesa.sh
 
       - name: Package for FearLauncher
-        run: |
-          set -e
-          mkdir -p out/arm64-v8a
-          find /tmp/pan -name 'libOSMesa*.so*' -exec cp -v {} out/arm64-v8a/ \;
-          find /tmp/pan -name 'libgallium*.so*' -exec cp -v {} out/arm64-v8a/ \; 2>/dev/null || true
-          cd out/arm64-v8a
-          if [ -f libOSMesa.so.8 ]; then cp -v libOSMesa.so.8 libOSMesa_8.so
-          elif [ -f libOSMesa.so ]; then cp -v libOSMesa.so libOSMesa_8.so
-          fi
-          ls -la
-          cd ../..
-          printf '%s
-' \
-            'FearLauncher Mali Panfork package' \
-            'Copy libOSMesa_8.so into launcher jniLibs/arm64-v8a' \
-            'Env: LIB_MESA_NAME=libOSMesa_8.so GALLIUM_DRIVER=panfrost PAN_MESA_DEBUG=noafbc' \
-            > out/README.txt
-          (cd out && zip -r fear-launcher-panfork-osmesa-arm64.zip arm64-v8a README.txt)
-          ls -la out/
+        run: bash scripts/package-fearlauncher.sh
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
