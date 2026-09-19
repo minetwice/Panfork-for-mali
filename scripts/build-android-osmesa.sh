@@ -9,8 +9,11 @@ fi
 command -v ccache >/dev/null 2>&1 || sudo apt-get install -y ccache || true
 
 envsubst < android-drm-aarch64 > build-crossfile-drm
-git clone --depth 1 https://gitlab.freedesktop.org/mesa/drm.git
+if [ ! -d drm/.git ]; then
+  git clone --depth 1 https://gitlab.freedesktop.org/mesa/drm.git
+fi
 cd drm
+rm -rf build-android
 meson setup build-android \
   --prefix=/tmp/drm-static \
   --cross-file ../build-crossfile-drm \
@@ -31,14 +34,11 @@ meson setup build-android \
 ninja -C build-android install
 cd ..
 
-# NOTE: This Lunarixus/24.0 tree has struct kbase_ in pan_device.h but is
-# missing src/panfrost/base/ (pan_base) from the Pojav CSF panfork.
-# Building panfrost therefore fails with incomplete type 'struct kbase_'.
-# Ship OSMesa + softpipe (swrast) first so FearLauncher gets libOSMesa_8.so.
-# Panfrost/kbase can be restored later by porting src/panfrost/base from
-# https://github.com/PojavLauncherTeam/panfork_offscreen_rootless (csf branch).
-
 envsubst < android-aarch64 > build-crossfile
+rm -rf build-android
+
+# swrast only: panfrost needs full pan_base (missing in this tree).
+# OSMesa + softpipe is enough for FearLauncher libOSMesa_8.so.
 meson setup build-android \
   --prefix=/tmp/pan \
   --cross-file build-crossfile \
@@ -56,5 +56,7 @@ meson setup build-android \
   -Dgallium-drivers=swrast \
   -Dshared-glapi=false \
   -Dbuildtype=release
+
 ninja -C build-android install
+echo "=== installed shared libs ==="
 find /tmp/pan -name '*.so*' | sort

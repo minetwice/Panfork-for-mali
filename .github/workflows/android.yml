@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   build:
-    name: Build OSMesa Panfrost aarch64
+    name: Build OSMesa aarch64
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -34,8 +34,8 @@ jobs:
           ndk-version: r26b
           add-to-path: true
 
-      - name: Apply Android noafbc patch
-        run: bash scripts/apply-noafbc.sh
+      - name: Apply Android build fixes
+        run: bash scripts/apply-android-fixes.sh
 
       - name: Build libdrm and Mesa OSMesa
         env:
@@ -51,5 +51,5 @@ jobs:
         with:
           name: fear-launcher-panfork-osmesa-aarch64
           path: out/fear-launcher-panfork-osmesa-arm64.zip
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 30
