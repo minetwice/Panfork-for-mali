@@ -1,0 +1,31 @@
+From: FearLauncher
+Subject: [PATCH] panfrost: default-disable AFBC on Android
+
+AFBC compressed textures frequently corrupt Minecraft block/chunk
+textures on Mali GPUs (G52/G57/G610/G615) when used through kbase +
+OSMesa. UI and sky can look fine while world blocks glitch.
+
+Default-enable PAN_DBG_NO_AFBC on Android builds. Users can still
+override via PAN_MESA_DEBUG if needed.
+
+---
+src/gallium/drivers/panfrost/pan_screen.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+Apply with:
+  patch -p1 < patches/0001-android-default-noafbc.patch
+
+or manually insert after debug_get_flags_option("PAN_MESA_DEBUG"...):
+
+#if defined(__ANDROID__) || defined(ANDROID)
+   if (!(dev->debug & PAN_DBG_NO_AFBC))
+      dev->debug |= PAN_DBG_NO_AFBC;
+#endif
+
+Exact context in pan_screen.c around device screen create:
+
+   dev->debug =
+      debug_get_flags_option("PAN_MESA_DEBUG", panfrost_debug_options, 0);
+   /* INSERT ANDROID NOAFBC BLOCK HERE */
+   screen->max_afbc_packing_ratio = debug_get_num_option(
+      "PAN_MAX_AFBC_PACKING_RATIO", DEFAULT_MAX_AFBC_PACKING_RATIO);
