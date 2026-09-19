@@ -6,16 +6,30 @@ if [ -z "${ANDROID_NDK_ROOT:-}" ]; then
   exit 1
 fi
 
+# ccache optional — cross files may reference it
+command -v ccache >/dev/null 2>&1 || sudo apt-get install -y ccache || true
+
 envsubst < android-drm-aarch64 > build-crossfile-drm
 git clone --depth 1 https://gitlab.freedesktop.org/mesa/drm.git
 cd drm
+# Modern libdrm: no "freedreno" option. Disable unused KMS backends only.
 meson setup build-android \
   --prefix=/tmp/drm-static \
   --cross-file ../build-crossfile-drm \
   -Ddefault_library=static \
-  -Dintel=disabled -Dradeon=disabled -Damdgpu=disabled \
-  -Dnouveau=disabled -Dvmwgfx=disabled -Dfreedreno=disabled \
-  -Dvc4=disabled -Detnaviv=disabled
+  -Dintel=disabled \
+  -Dradeon=disabled \
+  -Damdgpu=disabled \
+  -Dnouveau=disabled \
+  -Dvmwgfx=disabled \
+  -Dvc4=disabled \
+  -Detnaviv=disabled \
+  -Domap=disabled \
+  -Dexynos=disabled \
+  -Dtegra=disabled \
+  -Dcairo-tests=disabled \
+  -Dman-pages=disabled \
+  -Dtests=false
 ninja -C build-android install
 cd ..
 
